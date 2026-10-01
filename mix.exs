@@ -1,10 +1,25 @@
 defmodule OpentelemetryExq.MixProject do
   use Mix.Project
 
+  @version "0.1.0"
+  @source_url "https://github.com/ananthakumaran/opentelemetry_exq"
+
   def project do
     [
       app: :opentelemetry_exq,
-      version: "0.1.0",
+      version: @version,
+      description: "OpenTelemetry tracing for Exq jobs",
+      source_url: @source_url,
+      package: [
+        licenses: ["MIT"],
+        links: %{"GitHub" => @source_url},
+        files: ~w(lib mix.exs .formatter.exs README.md CHANGELOG.md LICENSE)
+      ],
+      docs: [
+        main: "readme",
+        extras: ["README.md", "CHANGELOG.md"],
+        source_ref: "v#{@version}"
+      ],
       elixir: "~> 1.10",
       start_permanent: Mix.env() == :prod,
       test_coverage: [summary: [threshold: 100]],

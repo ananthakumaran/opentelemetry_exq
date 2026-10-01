@@ -1,4 +1,6 @@
 defmodule OpentelemetryExq.JobHandler do
+  @moduledoc false
+
   alias OpenTelemetry.Span
 
   @tracer_id __MODULE__
