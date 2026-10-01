@@ -36,7 +36,7 @@ defmodule OpentelemetryExq.JobHandler do
     )
   end
 
-  # https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/semantic_conventions/messaging.md
+  # https://opentelemetry.io/docs/specs/semconv/messaging/messaging-spans/
   def handle_job_start(_event, _measurements, metadata, _config) do
     %{
       class: class,
@@ -51,17 +51,17 @@ defmodule OpentelemetryExq.JobHandler do
     OpenTelemetry.Tracer.set_current_span(:undefined)
 
     attributes = %{
-      "messaging.system": :exq,
-      "messaging.destination": queue,
-      "messaging.destination_kind": :queue,
-      "messaging.operation": :process,
-      "messaging.exq.jid": jid,
-      "messaging.exq.class": class,
-      "messaging.exq.retry_count": retry_count,
-      "messaging.exq.enqueued_at": DateTime.to_iso8601(enqueued_at)
+      "messaging.system" => "exq",
+      "messaging.destination.name" => queue,
+      "messaging.operation.name" => "process",
+      "messaging.operation.type" => "process",
+      "messaging.message.id" => jid,
+      "messaging.exq.class" => class,
+      "messaging.exq.retry_count" => retry_count,
+      "messaging.exq.enqueued_at" => DateTime.to_iso8601(enqueued_at)
     }
 
-    span_name = "#{class} process"
+    span_name = "process #{queue}"
 
     OpentelemetryTelemetry.start_telemetry_span(@tracer_id, span_name, metadata, %{
       kind: :consumer,
@@ -84,6 +84,14 @@ defmodule OpentelemetryExq.JobHandler do
 
     # Record exception and mark the span as errored
     Span.record_exception(ctx, reason, stacktrace)
+
+    error_type =
+      case reason do
+        %{__exception__: true, __struct__: module} -> to_string(module)
+        _ -> "_OTHER"
+      end
+
+    Span.set_attribute(ctx, "error.type", error_type)
     Span.set_status(ctx, OpenTelemetry.status(:error, ""))
 
     OpentelemetryTelemetry.end_telemetry_span(@tracer_id, metadata)

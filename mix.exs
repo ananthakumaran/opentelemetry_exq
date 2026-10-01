@@ -7,6 +7,7 @@ defmodule OpentelemetryExq.MixProject do
       version: "0.1.0",
       elixir: "~> 1.10",
       start_permanent: Mix.env() == :prod,
+      test_coverage: [summary: [threshold: 100]],
       deps: deps()
     ]
   end
@@ -27,6 +28,7 @@ defmodule OpentelemetryExq.MixProject do
       {:telemetry, "~> 0.4 or ~> 1.0"},
       {:opentelemetry, "~> 1.0", only: [:test]},
       {:opentelemetry_exporter, "~> 1.0", only: [:test]},
+      {:jason, "~> 1.0", only: :test},
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false}
     ]
   end
