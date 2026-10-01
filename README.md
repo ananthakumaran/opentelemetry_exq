@@ -1,5 +1,8 @@
 # OpentelemetryExq
 
+[![Hex](https://img.shields.io/hexpm/v/opentelemetry_exq.svg)](https://hex.pm/packages/opentelemetry_exq)
+[![HexDocs](https://img.shields.io/badge/HexDocs-documentation-blue.svg)](https://hexdocs.pm/opentelemetry_exq)
+
 OpenTelemetry tracing for Exq jobs.
 
 ## Setup
