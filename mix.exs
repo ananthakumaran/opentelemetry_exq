@@ -20,7 +20,7 @@ defmodule OpentelemetryExq.MixProject do
         extras: ["README.md", "CHANGELOG.md"],
         source_ref: "v#{@version}"
       ],
-      elixir: "~> 1.10",
+      elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       test_coverage: [summary: [threshold: 100]],
       deps: deps()
@@ -37,7 +37,7 @@ defmodule OpentelemetryExq.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:exq, "~> 0.14"},
+      {:exq, github: "akira/exq", branch: "otel"},
       {:opentelemetry_api, "~> 1.0"},
       {:opentelemetry_telemetry, "~> 1.0"},
       {:telemetry, "~> 0.4 or ~> 1.0"},

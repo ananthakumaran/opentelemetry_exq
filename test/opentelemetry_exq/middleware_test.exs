@@ -1,7 +1,8 @@
-defmodule OpentelemetryExq.JobHandlerTest do
+defmodule OpentelemetryExq.MiddlewareTest do
   use ExUnit.Case, async: false
 
   require Record
+  require OpenTelemetry.Tracer, as: Tracer
 
   @moduletag capture_log: true
 
@@ -27,6 +28,20 @@ defmodule OpentelemetryExq.JobHandlerTest do
     def perform, do: :ok
   end
 
+  defmodule KilledWorker do
+    def perform, do: Process.exit(self(), :kill)
+  end
+
+  defmodule WaitingWorker do
+    def perform do
+      send(OpentelemetryExq.MiddlewareTest.Receiver, {:waiting, self()})
+
+      receive do
+        :finish -> :ok
+      end
+    end
+  end
+
   defmodule ImmediateBackoff do
     @behaviour Exq.Backoff.Behaviour
 
@@ -46,18 +61,14 @@ defmodule OpentelemetryExq.JobHandlerTest do
         raise "Redis is unavailable: #{inspect(reason)}. Run docker compose up -d --wait."
     end
 
-    :ok = OpentelemetryExq.setup()
-
-    on_exit(fn ->
-      for name <- ["job_start", "job_stop", "job_exception"] do
-        :telemetry.detach("#{OpentelemetryExq.JobHandler}.#{name}")
-      end
-    end)
-
     :ok
   end
 
   setup do
+    enqueue_middleware = Application.fetch_env!(:exq, :enqueue_middleware)
+    Application.put_env(:exq, :enqueue_middleware, [])
+    on_exit(fn -> Application.put_env(:exq, :enqueue_middleware, enqueue_middleware) end)
+
     # OpenTelemetry's built-in test exporter sends completed spans to this process.
     :ok = :otel_simple_processor.set_exporter(:otel_exporter_pid, self())
     namespace = "opentelemetry_exq_test:#{UUID.uuid4()}"
@@ -149,6 +160,59 @@ defmodule OpentelemetryExq.JobHandlerTest do
     assert attributes["messaging.message.id"] == jid
     assert attributes["error.type"] == "_OTHER"
     assert span(exported, :status) == OpenTelemetry.status(:error, "")
+  end
+
+  test "finishes the job span when the worker Task is hard-killed" do
+    jid = enqueue("default", KilledWorker, [])
+
+    assert_receive {:span, exported}, 5_000
+    attributes = :otel_attributes.map(span(exported, :attributes))
+    assert attributes["messaging.message.id"] == jid
+    assert attributes["error.type"] == "_OTHER"
+    assert span(exported, :status) == OpenTelemetry.status(:error, "")
+    assert :otel_events.list(span(exported, :events)) == []
+    refute_receive {:span, _}
+  end
+
+  test "finishes the job span when a running job is cancelled" do
+    Process.register(self(), __MODULE__.Receiver)
+    jid = enqueue("default", WaitingWorker, [])
+
+    assert_receive {:waiting, task}, 5_000
+    {:links, [worker]} = Process.info(task, :links)
+    Exq.Worker.Server.cancel(worker)
+
+    assert_receive {:span, exported}, 5_000
+    attributes = :otel_attributes.map(span(exported, :attributes))
+    assert attributes["messaging.message.id"] == jid
+    assert attributes["error.type"] == "_OTHER"
+    assert span(exported, :status) == OpenTelemetry.status(:error, "")
+    refute_receive {:span, _}
+  end
+
+  test "finishing a job restores the lifecycle process's previous context" do
+    Tracer.with_span "existing context" do
+      ctx = OpenTelemetry.Ctx.get_current()
+
+      job = %Exq.Support.Job{
+        jid: "context",
+        queue: "default",
+        class: worker_class(OtherWorker),
+        enqueued_at: System.system_time(:millisecond) / 1000
+      }
+
+      pipeline =
+        OpentelemetryExq.Middleware.before_work(%Exq.Middleware.Pipeline{assigns: %{job: job}})
+
+      assert Tracer.current_span_ctx() == pipeline.assigns.otel_span
+      assert OpentelemetryExq.Middleware.after_processed_work(pipeline) == pipeline
+      assert OpenTelemetry.Ctx.get_current() == ctx
+    end
+
+    assert_receive {:span, job}, 5_000
+    assert span(job, :name) == "process default"
+    assert_receive {:span, parent}, 5_000
+    assert span(parent, :name) == "existing context"
   end
 
   test "exports a separate span when Exq retries a failed job" do
