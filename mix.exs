@@ -1,7 +1,7 @@
 defmodule OpentelemetryExq.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  @version "0.2.0"
   @source_url "https://github.com/ananthakumaran/opentelemetry_exq"
 
   def project do
@@ -39,7 +39,7 @@ defmodule OpentelemetryExq.MixProject do
     [
       {:exq, "~> 0.14"},
       {:opentelemetry_api, "~> 1.0"},
-      {:opentelemetry_telemetry, "~> 1.0.0"},
+      {:opentelemetry_telemetry, "~> 1.0"},
       {:telemetry, "~> 0.4 or ~> 1.0"},
       {:opentelemetry, "~> 1.0", only: [:test]},
       {:opentelemetry_exporter, "~> 1.0", only: [:test]},

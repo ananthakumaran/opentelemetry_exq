@@ -12,7 +12,7 @@ Add the dependencies to `mix.exs` and run `mix deps.get`:
 ```elixir
 defp deps do
   [
-    {:opentelemetry_exq, "~> 0.1.0"},
+    {:opentelemetry_exq, "~> 0.2.0"},
     {:opentelemetry, "~> 1.0"},
     {:opentelemetry_exporter, "~> 1.0"}
   ]
