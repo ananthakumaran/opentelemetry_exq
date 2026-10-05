@@ -48,13 +48,20 @@ defmodule OpentelemetryExq.EnqueueMiddleware do
     Tracer.with_span name, kind: :producer, attributes: attributes do
       jobs =
         Enum.map(pipeline.jobs, fn {job, options} ->
-          meta =
+          headers =
+            case Map.get(job.meta, "trace_propagation_headers") do
+              headers when is_map(headers) -> headers
+              _ -> %{}
+            end
+
+          headers =
             :otel_propagator_text_map.inject(
               :opentelemetry.get_text_map_injector(),
-              job.meta,
+              headers,
               fn key, value, carrier -> Map.put(carrier, key, value) end
             )
 
+          meta = Map.put(job.meta, "trace_propagation_headers", headers)
           {%{job | meta: meta}, options}
         end)
 

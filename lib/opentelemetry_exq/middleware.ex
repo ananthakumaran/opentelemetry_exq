@@ -19,7 +19,14 @@ defmodule OpentelemetryExq.Middleware do
     end
 
     job = pipeline.assigns.job
-    carrier = Enum.filter(job.meta, fn {_key, value} -> is_binary(value) end)
+
+    headers =
+      case Map.get(job.meta, "trace_propagation_headers") do
+        headers when is_map(headers) -> headers
+        _ -> %{}
+      end
+
+    carrier = Enum.filter(headers, fn {key, value} -> is_binary(key) and is_binary(value) end)
     ctx = :otel_propagator_text_map.extract_to(%{}, carrier)
     parent = Tracer.current_span_ctx(ctx)
 

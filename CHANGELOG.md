@@ -4,8 +4,10 @@
 
 - Replace telemetry handlers and `setup/0,1` with worker middleware and application configuration.
 - Trace enqueue operations and propagate context through job metadata.
+- Store and extract propagation headers exclusively under `trace_propagation_headers`.
 - Attach context inside worker Tasks so worker-created spans are children of the job span.
 - Configure job span relationships with `:link` (default), `:child`, or `:none`.
+- Remove unused `telemetry`, `opentelemetry_telemetry`, and test-only `opentelemetry_exporter` dependencies.
 
 ## 0.2.0 - 2026-10-04
 

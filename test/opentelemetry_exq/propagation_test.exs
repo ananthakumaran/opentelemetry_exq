@@ -112,7 +112,11 @@ defmodule OpentelemetryExq.PropagationTest do
     assert_nested(job, spans)
     assert_receive {:worker_context, meta, baggage}
     assert meta["tenant_id"] == 42
-    assert is_binary(meta["traceparent"])
+    assert is_binary(meta["trace_propagation_headers"]["traceparent"])
+    assert meta["trace_propagation_headers"]["baggage"] == "tenant=tenant-1"
+    refute Map.has_key?(meta, "traceparent")
+    refute Map.has_key?(meta, "tracestate")
+    refute Map.has_key?(meta, "baggage")
     assert baggage["tenant"] == {"tenant-1", []}
     assert Tracer.current_span_ctx() == :undefined
   end
@@ -239,13 +243,24 @@ defmodule OpentelemetryExq.PropagationTest do
   test "missing and malformed propagation headers safely create root job spans" do
     Application.put_env(:exq, :enqueue_middleware, [])
 
-    for meta <- [%{}, %{"traceparent" => "invalid"}, %{"traceparent" => 42, "tracestate" => %{}}] do
+    invalid_meta = [
+      %{},
+      %{"traceparent" => "invalid"},
+      %{"traceparent" => 42, "tracestate" => %{}},
+      %{"trace_propagation_headers" => %{"traceparent" => "invalid"}},
+      %{"trace_propagation_headers" => %{"traceparent" => 42, "tracestate" => %{}}},
+      %{"trace_propagation_headers" => nil},
+      %{"trace_propagation_headers" => "invalid"},
+      %{"trace_propagation_headers" => []}
+    ]
+
+    for meta <- invalid_meta do
       assert {:ok, _} = enqueue("nested", meta: meta)
     end
 
-    spans = receive_spans(6)
+    spans = receive_spans(length(invalid_meta) * 2)
     jobs = Enum.filter(spans, &(span(&1, :name) == "process default"))
-    assert length(jobs) == 3
+    assert length(jobs) == length(invalid_meta)
 
     for job <- jobs do
       assert span(job, :parent_span_id) == :undefined
@@ -255,21 +270,97 @@ defmodule OpentelemetryExq.PropagationTest do
   end
 
   @tag relationship: :child
-  test "extracts Sidekiq-compatible top-level propagation fields" do
+  test "ignores top-level propagation fields" do
     Application.put_env(:exq, :enqueue_middleware, [])
+    OpenTelemetry.Baggage.set(%{"tenant" => "top-level"})
 
     {:ok, _} =
-      Tracer.with_span "sidekiq producer" do
+      Tracer.with_span "external producer" do
         meta = :otel_propagator_text_map.inject([]) |> Map.new()
         enqueue("nested", meta: meta)
       end
 
     spans = receive_spans(3)
-    producer = named(spans, "sidekiq producer")
+    producer = named(spans, "external producer")
+    job = named(spans, "process default")
+    assert span(job, :parent_span_id) == :undefined
+    refute span(job, :trace_id) == span(producer, :trace_id)
+    assert :otel_links.list(span(job, :links)) == []
+    assert_receive {:worker_context, _meta, baggage}
+    assert baggage == %{}
+    assert_nested(job, spans)
+  end
+
+  @tag relationship: :child
+  test "extracts nested headers without mixing in top-level headers" do
+    Application.put_env(:exq, :enqueue_middleware, [])
+    OpenTelemetry.Baggage.set(%{"tenant" => "nested"})
+
+    {:ok, _} =
+      Tracer.with_span "external producer" do
+        headers = :otel_propagator_text_map.inject([]) |> Map.new()
+
+        enqueue("nested",
+          meta: %{
+            "trace_propagation_headers" => headers,
+            "traceparent" => "invalid",
+            "baggage" => "tenant=top-level"
+          }
+        )
+      end
+
+    spans = receive_spans(3)
+    producer = named(spans, "external producer")
     job = named(spans, "process default")
     assert span(job, :parent_span_id) == span(producer, :span_id)
     assert span(job, :trace_id) == span(producer, :trace_id)
+    assert_receive {:worker_context, _meta, baggage}
+    assert baggage["tenant"] == {"nested", []}
     assert_nested(job, spans)
+  end
+
+  test "serializes nested headers and preserves existing metadata", %{namespace: namespace} do
+    meta = %{
+      "tenant_id" => 42,
+      "trace_propagation_headers" => %{"sentry-trace" => "existing", "traceparent" => "stale"}
+    }
+
+    assert {:ok, jid} = Exq.enqueue(__MODULE__, "staging", Worker, ["nested"], meta: meta)
+    producer = named(receive_spans(1), "send staging")
+    {:ok, redis} = Redix.start_link(Application.fetch_env!(:exq, :url), sync_connect: true)
+    on_exit(fn -> if Process.alive?(redis), do: GenServer.stop(redis) end)
+
+    [{:ok, {serialized, "staging"}}] =
+      Exq.Redis.JobQueue.dequeue(redis, namespace, "host", ["staging"])
+
+    payload = Jason.decode!(serialized)
+    headers = payload["trace_propagation_headers"]
+    assert payload["jid"] == jid
+    assert payload["tenant_id"] == 42
+    assert headers["sentry-trace"] == "existing"
+    assert headers["traceparent"] != "stale"
+    context = :otel_propagator_text_map.extract_to(%{}, Map.to_list(headers))
+    parent = Tracer.current_span_ctx(context)
+    assert OpenTelemetry.Span.trace_id(parent) == span(producer, :trace_id)
+    assert OpenTelemetry.Span.span_id(parent) == span(producer, :span_id)
+    refute Map.has_key?(payload, "traceparent")
+    refute Map.has_key?(payload, "tracestate")
+    refute Map.has_key?(payload, "baggage")
+  end
+
+  test "enqueue replaces malformed propagation header containers" do
+    for headers <- [nil, "invalid", []] do
+      assert {:ok, _} = enqueue("nested", meta: %{"trace_propagation_headers" => headers})
+    end
+
+    spans = receive_spans(9)
+    assert Enum.count(spans, &(span(&1, :name) == "process default")) == 3
+
+    for _ <- 1..3 do
+      assert_receive {:worker_context, meta, _baggage}
+      assert is_binary(meta["trace_propagation_headers"]["traceparent"])
+      refute Map.has_key?(meta, "traceparent")
+    end
   end
 
   test "records conflicts without marking the producer span as an error" do
