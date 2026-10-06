@@ -39,6 +39,7 @@ defmodule OpentelemetryExq.MixProject do
     [
       {:exq, github: "akira/exq", branch: "otel"},
       {:opentelemetry_api, "~> 1.0"},
+      {:opentelemetry_semantic_conventions, "~> 1.27"},
       {:opentelemetry, "~> 1.0", only: [:test]},
       {:jason, "~> 1.0", only: :test},
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false}

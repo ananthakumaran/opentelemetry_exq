@@ -44,6 +44,10 @@ defmodule OpentelemetryExq.PropagationTest do
     end
   end
 
+  defmodule RaisingSerializer do
+    def encode(_args), do: raise("serializer unavailable")
+  end
+
   defmodule Reject do
     @behaviour Exq.Enqueue.Middleware
     def around_enqueue(_pipeline, _next), do: {:error, :blocked}
@@ -106,6 +110,19 @@ defmodule OpentelemetryExq.PropagationTest do
     assert attributes(producer)["messaging.message.id"] == jid
     assert attributes(producer)["messaging.operation.type"] == "send"
     assert attributes(producer)["messaging.operation.name"] == "enqueue"
+
+    for traced <- [producer, job] do
+      assert attributes(traced)["code.namespace"] == "OpentelemetryExq.PropagationTest.Worker"
+      assert attributes(traced)["code.function"] == "perform"
+
+      assert attributes(traced)["messaging.message.body.size"] ==
+               byte_size(Jason.encode!(["nested"]))
+
+      refute Map.has_key?(attributes(traced), "messaging.message.conversation_id")
+    end
+
+    refute Map.has_key?(attributes(producer), "messaging.exq.queue_latency_ms")
+    assert attributes(job)["messaging.exq.queue_latency_ms"] >= 0
     assert span(job, :parent_span_id) == :undefined
     refute span(job, :trace_id) == span(producer, :trace_id)
     assert_link(job, producer)
@@ -187,6 +204,9 @@ defmodule OpentelemetryExq.PropagationTest do
     assert attributes(producer)["messaging.batch.message_count"] == 2
     assert attributes(producer)["messaging.operation.name"] == "enqueue_all"
     refute Map.has_key?(attributes(producer), "messaging.destination.name")
+    refute Map.has_key?(attributes(producer), "code.namespace")
+    refute Map.has_key?(attributes(producer), "code.function")
+    refute Map.has_key?(attributes(producer), "messaging.message.body.size")
 
     for {:ok, jid} <- results do
       job = Enum.find(spans, &(attributes(&1)["messaging.message.id"] == jid))
@@ -469,6 +489,49 @@ defmodule OpentelemetryExq.PropagationTest do
     assert Tracer.current_span_ctx() == :undefined
   end
 
+  test "records serialized argument bytes, not contents or metadata" do
+    args = [%{"name" => "café", "token" => "secret"}]
+
+    for attributes <- traced_job_attributes(args) do
+      assert attributes["code.namespace"] == "Example.Worker"
+      assert attributes["code.function"] == "perform"
+      assert attributes["messaging.message.body.size"] == byte_size(Jason.encode!(args))
+      refute Map.has_key?(attributes, "args")
+      refute Map.has_key?(attributes, "tenant")
+    end
+  end
+
+  test "records the size of empty arguments" do
+    for attributes <- traced_job_attributes([]) do
+      assert attributes["messaging.message.body.size"] == 2
+    end
+  end
+
+  test "omits body size when argument serialization returns an error" do
+    for attributes <- traced_job_attributes([make_ref()]) do
+      assert attributes["code.namespace"] == "Example.Worker"
+      refute Map.has_key?(attributes, "messaging.message.body.size")
+    end
+  end
+
+  test "omits body size when a custom serializer raises" do
+    previous = Application.fetch_env(:exq, :serializer)
+
+    on_exit(fn ->
+      case previous do
+        {:ok, serializer} -> Application.put_env(:exq, :serializer, serializer)
+        :error -> Application.delete_env(:exq, :serializer)
+      end
+    end)
+
+    Application.put_env(:exq, :serializer, RaisingSerializer)
+
+    for attributes <- traced_job_attributes([]) do
+      assert attributes["code.function"] == "perform"
+      refute Map.has_key?(attributes, "messaging.message.body.size")
+    end
+  end
+
   test "empty bulk enqueue does not create a producer span" do
     assert Exq.enqueue_all(__MODULE__, []) == {:ok, []}
     refute_receive {:span, _}
@@ -477,9 +540,44 @@ defmodule OpentelemetryExq.PropagationTest do
   test "rejects an invalid span relationship" do
     Application.put_env(:opentelemetry_exq, :span_relationship, :invalid)
 
+    job = %Exq.Support.Job{
+      class: "Example.Worker",
+      args: [],
+      jid: "invalid-relationship",
+      queue: "default",
+      enqueued_at: System.system_time(:millisecond) / 1000
+    }
+
     assert_raise ArgumentError, "span_relationship must be :link, :child, or :none", fn ->
-      OpentelemetryExq.Middleware.before_work(%Exq.Middleware.Pipeline{})
+      OpentelemetryExq.Middleware.before_work(%Exq.Middleware.Pipeline{assigns: %{job: job}})
     end
+  end
+
+  defp traced_job_attributes(args) do
+    job = %Exq.Support.Job{
+      class: "Example.Worker",
+      args: args,
+      jid: "attributes",
+      queue: "default",
+      enqueued_at: System.system_time(:millisecond) / 1000,
+      meta: %{"tenant" => "private"}
+    }
+
+    enqueue_pipeline = %Exq.Enqueue.Pipeline{operation: :enqueue, jobs: [{job, []}]}
+
+    assert {:ok, "attributes"} =
+             OpentelemetryExq.EnqueueMiddleware.around_enqueue(enqueue_pipeline, fn pipeline ->
+               [{updated_job, _options}] = pipeline.jobs
+               assert updated_job.args == args
+               {:ok, updated_job.jid}
+             end)
+
+    pipeline =
+      OpentelemetryExq.Middleware.before_work(%Exq.Middleware.Pipeline{assigns: %{job: job}})
+
+    OpentelemetryExq.Middleware.after_processed_work(pipeline)
+    spans = receive_spans(2)
+    Enum.map(spans, &attributes/1)
   end
 
   defp enqueue(mode, options \\ []) do
@@ -499,7 +597,12 @@ defmodule OpentelemetryExq.PropagationTest do
     exported
   end
 
-  defp attributes(exported), do: :otel_attributes.map(span(exported, :attributes))
+  defp attributes(exported) do
+    exported
+    |> span(:attributes)
+    |> :otel_attributes.map()
+    |> Map.new(fn {key, value} -> {to_string(key), value} end)
+  end
 
   defp assert_link(job, producer) do
     assert [relationship] = :otel_links.list(span(job, :links))

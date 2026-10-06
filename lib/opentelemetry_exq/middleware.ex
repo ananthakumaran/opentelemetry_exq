@@ -8,6 +8,8 @@ defmodule OpentelemetryExq.Middleware do
 
   alias Exq.Middleware.Pipeline
   alias OpenTelemetry.{Ctx, Span}
+  alias OpenTelemetry.SemConv.ErrorAttributes
+  alias OpenTelemetry.SemConv.Incubating.{CodeAttributes, MessagingAttributes}
   require OpenTelemetry.Tracer, as: Tracer
 
   @impl true
@@ -36,18 +38,25 @@ defmodule OpentelemetryExq.Middleware do
         else: []
 
     ctx = if relationship == :child, do: ctx, else: Tracer.set_current_span(ctx, :undefined)
-    enqueued_at = DateTime.from_unix!(round(job.enqueued_at * 1000), :millisecond)
+    enqueued_at_ms = round(job.enqueued_at * 1000)
+    enqueued_at = DateTime.from_unix!(enqueued_at_ms, :millisecond)
+    queue_latency_ms = max(System.system_time(:millisecond) - enqueued_at_ms, 0)
 
     attributes = %{
-      "messaging.system" => "exq",
-      "messaging.destination.name" => job.queue,
-      "messaging.operation.name" => "process",
-      "messaging.operation.type" => "process",
-      "messaging.message.id" => job.jid,
+      MessagingAttributes.messaging_system() => "exq",
+      MessagingAttributes.messaging_destination_name() => job.queue,
+      MessagingAttributes.messaging_operation_name() => "process",
+      MessagingAttributes.messaging_operation_type() => "process",
+      MessagingAttributes.messaging_message_id() => job.jid,
+      CodeAttributes.code_namespace() => job.class,
+      CodeAttributes.code_function() => "perform",
       "messaging.exq.class" => job.class,
       "messaging.exq.retry_count" => job.retry_count || 0,
-      "messaging.exq.enqueued_at" => DateTime.to_iso8601(enqueued_at)
+      "messaging.exq.enqueued_at" => DateTime.to_iso8601(enqueued_at),
+      "messaging.exq.queue_latency_ms" => queue_latency_ms
     }
+
+    attributes = Map.merge(attributes, body_attributes(job.args))
 
     span =
       Tracer.start_span(ctx, "process #{job.queue}",
@@ -95,9 +104,21 @@ defmodule OpentelemetryExq.Middleware do
         _ -> "_OTHER"
       end
 
-    Span.set_attribute(span, "error.type", type)
+    Span.set_attribute(span, ErrorAttributes.error_type(), type)
     Span.set_status(span, OpenTelemetry.status(:error, ""))
     after_processed_work(pipeline)
+  end
+
+  defp body_attributes(args) do
+    case Exq.Support.Config.serializer().encode(args) do
+      {:ok, encoded} ->
+        %{MessagingAttributes.messaging_message_body_size() => IO.iodata_length(encoded)}
+
+      _ ->
+        %{}
+    end
+  rescue
+    _ -> %{}
   end
 
   defp exception({reason, [entry | _] = stacktrace})

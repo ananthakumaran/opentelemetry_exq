@@ -7,6 +7,8 @@ defmodule OpentelemetryExq.EnqueueMiddleware do
   @behaviour Exq.Enqueue.Middleware
 
   alias OpenTelemetry.Span
+  alias OpenTelemetry.SemConv.ErrorAttributes
+  alias OpenTelemetry.SemConv.Incubating.{CodeAttributes, MessagingAttributes}
   require OpenTelemetry.Tracer, as: Tracer
 
   @impl true
@@ -22,27 +24,31 @@ defmodule OpentelemetryExq.EnqueueMiddleware do
       end
 
     attributes = %{
-      "messaging.system" => "exq",
-      "messaging.operation.name" => Atom.to_string(pipeline.operation),
-      "messaging.operation.type" => "send"
+      MessagingAttributes.messaging_system() => "exq",
+      MessagingAttributes.messaging_operation_name() => Atom.to_string(pipeline.operation),
+      MessagingAttributes.messaging_operation_type() => "send"
     }
 
     attributes =
       case queues do
-        [queue] -> Map.put(attributes, "messaging.destination.name", queue)
+        [queue] -> Map.put(attributes, MessagingAttributes.messaging_destination_name(), queue)
         _ -> attributes
       end
 
     attributes =
       case pipeline.jobs do
         [{job, _options}] ->
-          Map.merge(attributes, %{
-            "messaging.message.id" => job.jid,
+          attributes
+          |> Map.merge(body_attributes(job.args))
+          |> Map.merge(%{
+            CodeAttributes.code_namespace() => job.class,
+            CodeAttributes.code_function() => "perform",
+            MessagingAttributes.messaging_message_id() => job.jid,
             "messaging.exq.class" => job.class
           })
 
         jobs ->
-          Map.put(attributes, "messaging.batch.message_count", length(jobs))
+          Map.put(attributes, MessagingAttributes.messaging_batch_message_count(), length(jobs))
       end
 
     Tracer.with_span name, kind: :producer, attributes: attributes do
@@ -79,6 +85,19 @@ defmodule OpentelemetryExq.EnqueueMiddleware do
     end
   end
 
+  defp body_attributes(args) do
+    case Exq.Support.Config.serializer().encode(args) do
+      {:ok, encoded} ->
+        %{MessagingAttributes.messaging_message_body_size() => IO.iodata_length(encoded)}
+
+      _ ->
+        %{}
+    end
+  rescue
+    # Observability must not make otherwise valid custom/inline jobs fail.
+    _ -> %{}
+  end
+
   defp record_result({:ok, results}, :enqueue_all) when is_list(results) do
     Enum.each(results, &record_result(&1, :enqueue))
     statuses = results |> Enum.map(fn {status, _} -> Atom.to_string(status) end) |> Enum.uniq()
@@ -104,7 +123,7 @@ defmodule OpentelemetryExq.EnqueueMiddleware do
         _ -> "_OTHER"
       end
 
-    Tracer.set_attribute("error.type", type)
+    Tracer.set_attribute(ErrorAttributes.error_type(), type)
     Tracer.set_status(:error, "")
   end
 end
