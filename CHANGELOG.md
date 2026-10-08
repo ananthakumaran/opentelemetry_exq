@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 - 2026-10-08
 
+- Require Exq `~> 0.25.0` and Elixir `~> 1.18`.
 - Replace telemetry handlers and `setup/0,1` with worker middleware and application configuration.
 - Trace enqueue operations and propagate context through job metadata.
 - Store and extract propagation headers exclusively under `trace_propagation_headers`.
