@@ -3,7 +3,7 @@
 [![Hex](https://img.shields.io/hexpm/v/opentelemetry_exq.svg)](https://hex.pm/packages/opentelemetry_exq)
 [![HexDocs](https://img.shields.io/badge/HexDocs-documentation-blue.svg)](https://hexdocs.pm/opentelemetry_exq)
 
-OpenTelemetry tracing for Exq jobs.
+OpenTelemetry tracing for Exq jobs. Creates spans for enqueue calls and job execution, propagating trace context from enqueueing to workers.
 
 ## Setup
 
@@ -19,8 +19,7 @@ defp deps do
 end
 ```
 
-In `config/config.exs`, add the telemetry middleware alongside Exq's default
-middleware:
+Keep your existing worker middleware and add `OpentelemetryExq.Middleware` after `Exq.Middleware.Job`. Configure `OpentelemetryExq.EnqueueMiddleware` in the caller-side enqueue chain:
 
 ```elixir
 import Config
@@ -30,29 +29,31 @@ config :exq,
     Exq.Middleware.Stats,
     Exq.Middleware.Job,
     Exq.Middleware.Manager,
+    Exq.Middleware.Unique,
     Exq.Middleware.Logger,
-    Exq.Middleware.Telemetry
-  ]
+    OpentelemetryExq.Middleware
+  ],
+  enqueue_middleware: [OpentelemetryExq.EnqueueMiddleware]
 ```
 
-Call `OpentelemetryExq.setup/0` during application startup:
+## Span relationships
+
+Choose how the job span relates to the propagated enqueue span with the `:span_relationship` application setting:
+
+- `:link` (default): start a new trace and link to the enqueue span.
+- `:child`: make the job span a child of the enqueue span in the same trace.
+- `:none`: start a new trace without linking to the enqueue span.
+
+For example, in `config/config.exs`:
 
 ```elixir
-defmodule MyApp.Application do
-  use Application
-
-  @impl true
-  def start(_type, _args) do
-    :ok = OpentelemetryExq.setup()
-
-    children = [
-      # Your existing application children
-    ]
-
-    Supervisor.start_link(children, strategy: :one_for_one, name: MyApp.Supervisor)
-  end
-end
+config :opentelemetry_exq, span_relationship: :child
 ```
 
-Keep your existing Exq Redis/queue settings and OpenTelemetry exporter
-configuration. Each processed job will now produce a span.
+## Development
+
+```sh
+docker compose up -d
+mix deps.get
+mix test --cover
+```
