@@ -37,7 +37,7 @@ defmodule OpentelemetryExq.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:exq, github: "akira/exq", branch: "otel"},
+      {:exq, "~> 0.25.0"},
       {:opentelemetry_api, "~> 1.0"},
       {:opentelemetry_semantic_conventions, "~> 1.27"},
       {:opentelemetry, "~> 1.0", only: [:test]},
